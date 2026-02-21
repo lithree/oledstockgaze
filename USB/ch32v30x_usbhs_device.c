@@ -10,8 +10,6 @@
  * microcontroller manufactured by Nanjing Qinheng Microelectronics.
  *******************************************************************************/
 #include "ch32v30x_usbhs_device.h"
-#include "stdio.h"
-#include "string.h"
 
 /******************************************************************************/
 /* Variable Definition */
@@ -26,7 +24,7 @@ __attribute__((aligned(4))) uint8_t IFTest_Buf[53] =
         0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // 37
         0x7F, 0xBF, 0xDF, 0xEF, 0xF7, 0xFB, 0xFD,                         // 44
         0xFC, 0x7E, 0xBF, 0xDF, 0xEF, 0xF7, 0xFB, 0xFD, 0x7E              // 53
-};
+    };
 
 /* Global */
 const uint8_t *pUSBHS_Descr;
@@ -54,8 +52,6 @@ __attribute__((aligned(4))) uint8_t USBHS_EP4_Tx_Buf[DEF_USB_EP4_HS_SIZE];
 __attribute__((aligned(4))) uint8_t USBHS_EP6_Tx_Buf[DEF_USB_EP6_HS_SIZE];
 
 volatile uint16_t USBHS_EP3_Rx_Len = 0;
-extern volatile uint8_t LED_status;
-extern volatile uint8_t LED_flag;
 
 /* Endpoint tx busy flag */
 volatile uint8_t USBHS_Endp_Busy[DEF_UEP_NUM];
@@ -396,9 +392,10 @@ void USBHS_IRQHandler(void)
                 USBHS_Endp_Busy[DEF_UEP1] &= ~DEF_UEP_BUSY;
                 break;
 
-            /* --- CORRECTED: end-point 4 data in interrupt --- */
+            /* --- FINAL CORRECTED VERSION: end-point 4 data in interrupt --- */
             case USBHS_UIS_TOKEN_IN | DEF_UEP4:
                 USBHSD->UEP4_TX_CTRL = (USBHSD->UEP4_TX_CTRL & ~USBHS_UEP_T_RES_MASK) | USBHS_UEP_T_RES_NAK;
+                USBHSD->UEP4_TX_CTRL ^= USBHS_UEP_T_TOG_DATA1; /* <-- THIS LINE FIXES THE TIMEOUT BUG */
                 USBHS_Endp_Busy[DEF_UEP4] &= ~DEF_UEP_BUSY;
                 break;
 
@@ -427,11 +424,12 @@ void USBHS_IRQHandler(void)
                 {
                     if ((USBHS_SetupReqType & USB_REQ_TYP_MASK) == USB_REQ_TYP_VENDOR)
                     {
-                        if (USBHS_SetupReqCode == 0x01)
-                        {
-                            LED_status = USBHS_SetupReqValue;
-                            LED_flag = 1;
-                        }
+                        /* This is the original location of the vendor request handler. It is restored now. */
+                         if (USBHS_SetupReqCode == 0x01)
+                         {
+                             LED_status = USBHS_EP0_Buf[0];
+                             LED_flag = 1;
+                         }
                     }
                     USBHS_SetupReqLen -= len;
                     if (USBHS_SetupReqLen == 0)
@@ -461,12 +459,13 @@ void USBHS_IRQHandler(void)
                 }
                 break;
 
-            /* --- MODIFIED: end-point 3 data out interrupt --- */
+            /* end-point 3 data out interrupt */
             case USBHS_UIS_TOKEN_OUT | DEF_UEP3:
                 if (intst & USBHS_UIS_TOG_OK)
                 {
                     USBHS_EP3_Rx_Len = USBHSD->RX_LEN;
                     USBHSD->UEP3_RX_CTRL = (USBHSD->UEP3_RX_CTRL & ~USBHS_UEP_R_RES_MASK) | USBHS_UEP_R_RES_NAK;
+                    USBHSD->UEP3_RX_CTRL ^= USBHS_UEP_R_TOG_DATA1;
                 }
                 break;
 
@@ -517,16 +516,16 @@ void USBHS_IRQHandler(void)
 
         if ((USBHS_SetupReqType & USB_REQ_TYP_MASK) == USB_REQ_TYP_VENDOR)
         {
-            switch (USBHS_SetupReqCode)
+            /* Correctly handle the vendor request based on the host application */
+            if( USBHS_SetupReqCode == 0x01 )
             {
-            case 0x01: // LED Command
-                LED_status = (USBHS_SetupReqValue > 0) ? 1: 0;
+                LED_status = (USBHS_SetupReqValue > 0) ? 1 : 0;
                 LED_flag = 1;
-                break;
-
-            default:
+                len = 0; // Prepare for the zero-length status stage
+            }
+            else
+            {
                 errflag = 0xFF;
-                break;
             }
         }
         else
@@ -807,14 +806,10 @@ void USBHS_IRQHandler(void)
             }
             else
             {
-                if (USBHS_SetupReqLen == 0)
+                if(USBHS_SetupReqLen == 0)
                 {
-                    USBHSD->UEP0_TX_LEN = 0;
-                    USBHSD->UEP0_TX_CTRL = USBHS_UEP_T_TOG_DATA1 | USBHS_UEP_T_RES_ACK;
-                }
-                else
-                {
-                    USBHSD->UEP0_RX_CTRL = USBHS_UEP_R_TOG_DATA1 | USBHS_UEP_R_RES_ACK;
+                     USBHSD->UEP0_TX_LEN = 0;
+                     USBHSD->UEP0_TX_CTRL = USBHS_UEP_T_TOG_DATA1 | USBHS_UEP_T_RES_ACK;
                 }
             }
         }
