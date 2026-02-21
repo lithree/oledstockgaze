@@ -10,6 +10,8 @@
  * microcontroller manufactured by Nanjing Qinheng Microelectronics.
  *******************************************************************************/
 #include "ch32v30x_usbhs_device.h"
+#include "stdio.h"
+#include "string.h"
 
 /******************************************************************************/
 /* Variable Definition */
@@ -52,6 +54,8 @@ __attribute__((aligned(4))) uint8_t USBHS_EP4_Tx_Buf[DEF_USB_EP4_HS_SIZE];
 __attribute__((aligned(4))) uint8_t USBHS_EP6_Tx_Buf[DEF_USB_EP6_HS_SIZE];
 
 volatile uint16_t USBHS_EP3_Rx_Len = 0;
+extern volatile uint8_t LED_status;
+extern volatile uint8_t LED_flag;
 
 /* Endpoint tx busy flag */
 volatile uint8_t USBHS_Endp_Busy[DEF_UEP_NUM];
@@ -198,7 +202,7 @@ void USBHS_Device_Init(FunctionalState sta)
         USBHSD->CONTROL &= ~USBHS_UC_RESET_SIE;
         USBHSD->HOST_CTRL = USBHS_UH_PHY_SUSPENDM;
         USBHSD->CONTROL = USBHS_UC_DMA_EN | USBHS_UC_INT_BUSY | USBHS_UC_SPEED_HIGH;
-        USBHSD->INT_EN = USBHS_UIE_SETUP_ACT | USBHS_UIE_TRANSFER | USBHS_UIE_DETECT | USBHS_UIE_SUSPEND;
+        USBHSD->INT_EN = USBHS_UIE_SETUP_ACT | USBHS_UIE_TRANSFER | USBHS_UIE_DETECT | USBHS_UIE_BUS_RST | USBHS_UIE_SUSPEND;
         USBHS_Device_Endp_Init();
         USBHSD->CONTROL |= USBHS_UC_DEV_PU_EN;
         NVIC_EnableIRQ(USBHS_IRQn);
@@ -392,14 +396,10 @@ void USBHS_IRQHandler(void)
                 USBHS_Endp_Busy[DEF_UEP1] &= ~DEF_UEP_BUSY;
                 break;
 
-            /* --- MODIFIED: end-point 4 data in interrupt (Speed Test Source) --- */
+            /* --- CORRECTED: end-point 4 data in interrupt --- */
             case USBHS_UIS_TOKEN_IN | DEF_UEP4:
-                USBHSD->UEP4_TX_CTRL ^= USBHS_UEP_T_TOG_DATA1;
-                // Reload 512 bytes for High Speed and set to ACK for continuous stream
-                USBHSD->UEP4_TX_LEN = 512;
-                USBHSD->UEP4_TX_CTRL = (USBHSD->UEP4_TX_CTRL & ~USBHS_UEP_T_RES_MASK) | USBHS_UEP_T_RES_ACK;
+                USBHSD->UEP4_TX_CTRL = (USBHSD->UEP4_TX_CTRL & ~USBHS_UEP_T_RES_MASK) | USBHS_UEP_T_RES_NAK;
                 USBHS_Endp_Busy[DEF_UEP4] &= ~DEF_UEP_BUSY;
-                // Link to EP3 removed for speed test independence
                 break;
 
             /* end-point 6 data in interrupt */
@@ -425,23 +425,13 @@ void USBHS_IRQHandler(void)
                 len = USBHSD->RX_LEN;
                 if (intst & USBHS_UIS_TOG_OK)
                 {
-                    // if ( ( USBHS_SetupReqType & USB_REQ_TYP_MASK ) != USB_REQ_TYP_STANDARD ) { }
                     if ((USBHS_SetupReqType & USB_REQ_TYP_MASK) == USB_REQ_TYP_VENDOR)
                     {
-                        printf("INTERRUPT1\n");
-                        if (!LED_flag)
-                            switch (USBHS_SetupReqCode)
-                            {
-                            case 0x00:
-                                LED_status = 0;
-                                break;
-                            case 0x01:
-                                LED_status = 1;
-                                break;
-                            default:
-                                break;
-                            }
-                        LED_flag = 1;
+                        if (USBHS_SetupReqCode == 0x01)
+                        {
+                            LED_status = USBHS_SetupReqValue;
+                            LED_flag = 1;
+                        }
                     }
                     USBHS_SetupReqLen -= len;
                     if (USBHS_SetupReqLen == 0)
@@ -524,23 +514,13 @@ void USBHS_IRQHandler(void)
 
         len = 0;
         errflag = 0;
-        printf("SETUP ACT FIRED\n");
 
         if ((USBHS_SetupReqType & USB_REQ_TYP_MASK) == USB_REQ_TYP_VENDOR)
         {
             switch (USBHS_SetupReqCode)
             {
             case 0x01: // LED Command
-                printf("VENDOR CMD 0x01 RECEIVED\n");
-
-                // Based on your host code, value is in Index
-                if (USBHS_SetupReqIndex == 1) {
-                    LED_status = 1;
-                    printf("LED ON\n");
-                } else {
-                    LED_status = 0;
-                    printf("LED OFF\n");
-                }
+                LED_status = (USBHS_SetupReqValue > 0) ? 1: 0;
                 LED_flag = 1;
                 break;
 
@@ -659,9 +639,7 @@ void USBHS_IRQHandler(void)
             case USB_SET_CONFIGURATION:
                 USBHS_DevConfig = (uint8_t)(USBHS_SetupReqValue & 0xFF);
                 USBHS_DevEnumStatus = 0x01;
-                /* FIX: Prime Endpoint 4 to kick-start the continuous IN stream */
-                USBHSD->UEP4_TX_LEN = 512;
-                USBHSD->UEP4_TX_CTRL = (USBHSD->UEP4_TX_CTRL & ~USBHS_UEP_T_RES_MASK) | USBHS_UEP_T_RES_ACK;
+                /* CORRECTED: Removed automatic priming of EP4 */
                 break;
 
             case USB_CLEAR_FEATURE:
@@ -872,15 +850,4 @@ void USBHS_IRQHandler(void)
     {
         USBHSD->INT_FG = intflag;
     }
-}
-
-/*********************************************************************
- * @fn      USBHS_Send_Resume
- *
- * @brief   USBHS device sends wake-up signal to host
- *
- * @return  none
- */
-void USBHS_Send_Resume(void)
-{
 }
