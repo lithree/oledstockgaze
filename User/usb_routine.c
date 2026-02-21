@@ -1,8 +1,14 @@
 #include "ch32v30x_usbhs_device.h"
 #include "debug.h"
 #include "usb_routine.h"
+#include "string.h"
 
 uint8_t ret = 0;
+
+uint8_t  Dat_Up_Buf[1024];
+uint8_t  Bulk_Out_Buf[1024];
+volatile uint16_t Bulk_Out_Len = 0;
+
 
 void USB_command_check()
 {
@@ -10,9 +16,6 @@ void USB_command_check()
     {
         printf("Command Received: %d\r\n", LED_status);
 
-        // Simply write the status directly.
-        // If PC sent 1 -> Write Bit_SET (1)
-        // If PC sent 0 -> Write Bit_RESET (0)
         if (LED_status)
         {
             GPIO_WriteBit(GPIOA, GPIO_Pin_15, Bit_SET);
@@ -53,5 +56,23 @@ void USB_command_check()
                 USBHSD->UEP1_RX_CTRL = (USBHSD->UEP1_RX_CTRL & ~USBHS_UEP_R_RES_MASK) | USBHS_UEP_R_RES_ACK;
             }
         }
+    }
+}
+
+void USB_bulk_data_handler(void)
+{
+    // Check if a USB packet has been received on Endpoint 3
+    if (USBHS_EP3_Rx_Len > 0)
+    {
+        // Echo the data back on Endpoint 4
+        memcpy(USBHS_EP4_Tx_Buf, USBHS_EP3_Rx_Buf, USBHS_EP3_Rx_Len);
+        USBHSD->UEP4_TX_LEN = USBHS_EP3_Rx_Len;
+        USBHSD->UEP4_TX_CTRL = (USBHSD->UEP4_TX_CTRL & ~USBHS_UEP_T_RES_MASK) | USBHS_UEP_T_RES_ACK;
+
+        // Clear the received length flag
+        USBHS_EP3_Rx_Len = 0;
+
+        // Re-arm Endpoint 3 to receive the next packet
+        USBHSD->UEP3_RX_CTRL = (USBHSD->UEP3_RX_CTRL & ~USBHS_UEP_R_RES_MASK) | USBHS_UEP_R_RES_ACK;
     }
 }

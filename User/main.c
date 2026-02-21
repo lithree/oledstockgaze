@@ -70,6 +70,7 @@ int main(void)
     while (1)
     {
         USB_command_check();
+        USB_bulk_data_handler();
         uint8_t new_price = Get_Simulated_Stock_Price();
         OLED_Chart_AddPoint(new_price);
     }
