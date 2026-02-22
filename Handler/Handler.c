@@ -2,6 +2,7 @@
 #include <cstring>
 #include <libusb.h>
 #include <cstdint>
+#include <cstdlib>
 
 /* Device related constants */
 #define VID 0x1A86
@@ -42,9 +43,9 @@ void usb_send_control(libusb_device_handle *handle, int cRequest, int cIndex, in
     );
 
     if (res < 0)
-        printf("USB Cmd Failed\n");
+        fprintf(stderr, "USB Cmd Failed\n");
     else
-        printf("USB Cmd Sent\n");
+        fprintf(stderr, "USB Cmd Sent\n");
 }
 
 void build_frame(uint8_t *frame, uint8_t type, const uint8_t *payload, uint16_t len)
@@ -84,22 +85,22 @@ bool usb_send_frame(uint8_t type, const uint8_t *payload, uint16_t len)
                frame,
                FRAME_SIZE(len),
                &transferred,
-               0) == 0;
+               TIMEOUT_MS) == 0;
 }
 
-int main()
+int main(int argc, char *argv[])
 {
     int result = libusb_init(&ctx);
     if (result < 0)
     {
-        printf("libusb_init failed\n");
+        fprintf(stderr, "libusb_init failed\n");
         return -1;
     }
 
     handle = libusb_open_device_with_vid_pid(ctx, VID, PID);
     if (!handle)
     {
-        printf("Device not found\n");
+        fprintf(stderr, "Device not found\n");
         libusb_exit(ctx);
         return -1;
     }
@@ -109,57 +110,42 @@ int main()
     result = libusb_claim_interface(handle, 0);
     if (result < 0)
     {
-        printf("Failed to claim interface: %s\n",
+        fprintf(stderr, "Failed to claim interface: %s\n",
                libusb_error_name(result));
+        libusb_close(handle);
+        libusb_exit(ctx);
+        return -1;
     }
     else
     {
         interfaceClaimed = true;
-        printf("Interface claimed\n");
+        fprintf(stderr, "Interface claimed\n");
     }
 
     if (interfaceClaimed)
     {
-        while (1)
+        char line_buf[MAX_PAYLOAD];
+        while (fgets(line_buf, sizeof(line_buf), stdin) != NULL)
         {
-            printf("Enter LED Status:\n");
-            uint8_t LED_SW = 0;
-            scanf("%d", &LED_SW);
-            usb_send_control(handle, 0x01, 0x01, LED_SW);
+            // Remove newline character if present
+            line_buf[strcspn(line_buf, "\n")] = 0;
+            fprintf(stderr, "Received from stdin: %s\n", line_buf);
 
-            // --- ADDED: Bulk transfer test logic ---
-            printf("\n--- Running Bulk Echo Test ---\n");
-            uint8_t tx_buf[64];
-            uint8_t rx_buf[64];
-            int transferred = 0;
-
-            for (int i = 0; i < 64; i++) { tx_buf[i] = static_cast<uint8_t>(i); }
-
-            result = libusb_bulk_transfer(handle, EP_OUT, tx_buf, sizeof(tx_buf), &transferred, TIMEOUT_MS);
-            if (result < 0) {
-                printf("Bulk OUT failed: %s\n", libusb_error_name(result));
-                continue; // Continue to next loop iteration
+            if (usb_send_frame(0x02, (const uint8_t *)line_buf, strlen(line_buf)))
+            {
+                fprintf(stderr, "Message sent successfully via Bulk transfer\n");
             }
-
-            result = libusb_bulk_transfer(handle, EP_IN, rx_buf, sizeof(rx_buf), &transferred, TIMEOUT_MS);
-            if (result < 0) {
-                printf("Bulk IN failed: %s\n", libusb_error_name(result));
-                continue; // Continue to next loop iteration
-            }
-            
-            if (transferred == 64 && memcmp(tx_buf, rx_buf, 64) == 0) {
-                printf("Data verification PASSED\n");
-            } else {
-                printf("Data verification FAILED (Received %d bytes)\n", transferred);
+            else
+            {
+                fprintf(stderr, "Failed to send message\n");
             }
         }
 
-        // BUG FIX: The interface should be released and libusb closed only once, after the loop.
         libusb_release_interface(handle, 0);
         libusb_close(handle);
         libusb_exit(ctx);
 
-        printf("Done\n");
+        fprintf(stderr, "Done\n");
     }
     return 0;
 }
