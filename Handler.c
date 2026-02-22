@@ -122,12 +122,10 @@ int main()
     {
         while (1)
         {
-            // --- YOUR CODE: UNCHANGED --- 
             printf("Enter LED Status:\n");
             uint8_t LED_SW = 0;
             scanf("%d", &LED_SW);
             usb_send_control(handle, 0x01, 0x01, LED_SW);
-            // --- END OF YOUR CODE ---
 
             // --- ADDED: Bulk transfer test logic ---
             printf("\n--- Running Bulk Echo Test ---\n");
