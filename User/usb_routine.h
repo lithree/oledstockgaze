@@ -25,10 +25,9 @@ extern uint8_t  Dat_Up_Buf[1024];
 extern uint8_t  Bulk_Out_Buf[1024];
 extern volatile uint16_t Bulk_Out_Len;
 
-// External declaration for USBHS_EP3_Rx_Buffer and USBHS_EP3_Rx_Len
-// These are typically defined in a USBHS device driver file (e.g., ch32v30x_usbhs_device.c)
-extern __attribute__ ((aligned(4))) uint8_t  USBHS_EP3_Rx_Buffer[64]; // Assuming endpoint 3 max packet size is 64
-extern __attribute__ ((aligned(4))) uint8_t  USBHS_EP4_Tx_Buffer[64]; // Assuming endpoint 4 max packet size is 64
+// External declarations for USB buffers, using correct names from ch32v30x_usbhs_device.h
+extern __attribute__ ((aligned(4))) uint8_t USBHS_EP3_Rx_Buf[ ];
+extern __attribute__ ((aligned(4))) uint8_t USBHS_EP4_Tx_Buf[ ];
 extern volatile uint16_t USBHS_EP3_Rx_Len;
 
 

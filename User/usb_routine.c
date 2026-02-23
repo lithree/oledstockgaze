@@ -65,7 +65,7 @@ void USB_bulk_data_handler(void)
     // Check if a USB packet has been received on Endpoint 3
     if (USBHS_EP3_Rx_Len > 0)
     {
-        uint8_t message_type = USBHS_EP3_Rx_Buffer[2]; // Get the message type from the header
+        uint8_t message_type = USBHS_EP3_Rx_Buf[2]; // Get the message type from the header
 
         if (message_type == MSG_TYPE_TICKER_AND_PRICE)
         {
@@ -76,27 +76,22 @@ void USB_bulk_data_handler(void)
             if (USBHS_EP3_Rx_Len >= (HEADER_SIZE + COMBINED_PAYLOAD_LEN))
             {
                 // Extract ticker string
-                memcpy(ticker_display_buf, USBHS_EP3_Rx_Buffer + HEADER_SIZE, TICKER_FIXED_LEN);
+                memcpy(ticker_display_buf, USBHS_EP3_Rx_Buf + HEADER_SIZE, TICKER_FIXED_LEN);
                 ticker_display_buf[TICKER_FIXED_LEN] = '\0'; 
 
                 // Extract float price
-                memcpy(&received_price, USBHS_EP3_Rx_Buffer + HEADER_SIZE + TICKER_FIXED_LEN, sizeof(float));
+                memcpy(&received_price, USBHS_EP3_Rx_Buf + HEADER_SIZE + TICKER_FIXED_LEN, sizeof(float));
 
                 // Format price for display
                 sprintf(price_display_buf, "$%.2f", received_price);
 
                 // Use existing LCD logic:
-                // 1. Clear text area (Pages 0 and 1) - actually OLED_ShowString overwrites
-                // 2. Display ticker on Page 0
                 OLED_ShowString(0, 0, "Ticker: ");
                 OLED_ShowString(48, 0, ticker_display_buf);
-                // 3. Display price on Page 1
                 OLED_ShowString(0, 1, "Price : ");
                 OLED_ShowString(48, 1, price_display_buf);
 
-                // 4. Update the chart with the new price
-                // Since OLED_Chart_AddPoint(value) clamps to 47, it's safe.
-                // We might want to scale it if received_price is larger.
+                // Update the chart with the new price
                 OLED_Chart_AddPoint((uint8_t)received_price);
 
                 printf("Updated Ticker: %s, Price: %s\r\n", ticker_display_buf, price_display_buf);
