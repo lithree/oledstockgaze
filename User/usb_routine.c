@@ -62,22 +62,22 @@ void USB_command_check()
 
 void USB_bulk_data_handler(void)
 {
-    // Check if a USB packet has been received on Endpoint 3
     if (USBHS_EP3_Rx_Len > 0)
     {
-        uint8_t message_type = USBHS_EP3_Rx_Buf[2]; // Get the message type from the header
+        uint8_t message_type = USBHS_EP3_Rx_Buf[2];
 
         if (message_type == MSG_TYPE_TICKER_AND_PRICE)
         {
             char ticker_display_buf[TICKER_FIXED_LEN + 1];
-            char price_display_buf[20]; 
+            char price_display_buf[20];
             float received_price;
 
             if (USBHS_EP3_Rx_Len >= (HEADER_SIZE + COMBINED_PAYLOAD_LEN))
             {
+                // Initialize ticker buffer with zeros to ensure null termination
+                memset(ticker_display_buf, 0, sizeof(ticker_display_buf));
                 // Extract ticker string
                 memcpy(ticker_display_buf, USBHS_EP3_Rx_Buf + HEADER_SIZE, TICKER_FIXED_LEN);
-                ticker_display_buf[TICKER_FIXED_LEN] = '\0'; 
 
                 // Extract float price
                 memcpy(&received_price, USBHS_EP3_Rx_Buf + HEADER_SIZE + TICKER_FIXED_LEN, sizeof(float));
@@ -85,7 +85,11 @@ void USB_bulk_data_handler(void)
                 // Format price for display
                 sprintf(price_display_buf, "$%.2f", received_price);
 
-                // Use existing LCD logic:
+                // Clear previous text by showing a line of spaces
+                OLED_ShowString(48, 0, "          "); 
+                OLED_ShowString(48, 1, "          ");
+
+                // Update text display
                 OLED_ShowString(0, 0, "Ticker: ");
                 OLED_ShowString(48, 0, ticker_display_buf);
                 OLED_ShowString(0, 1, "Price : ");
@@ -98,6 +102,7 @@ void USB_bulk_data_handler(void)
             }
         }
         
+        // Reset received length and RE-ARM endpoint 3 to receive the next packet
         USBHS_EP3_Rx_Len = 0;
         USBHSD->UEP3_RX_CTRL = (USBHSD->UEP3_RX_CTRL & ~USBHS_UEP_R_RES_MASK) | USBHS_UEP_R_RES_ACK;
     }
