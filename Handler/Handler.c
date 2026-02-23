@@ -1,8 +1,8 @@
 #include <cstdio>
 #include <cstring>
-#include <libusb.h>
+#include "libusb.h"
 #include <cstdint>
-#include <cstdlib>
+#include <cstdlib> // For atof
 
 /* Device related constants */
 #define VID 0x1A86
@@ -24,6 +24,13 @@
 #define MAX_PAYLOAD 1024
 #define MAX_FRAME (MAX_PAYLOAD + OVERHEAD)
 #define FRAME_SIZE(len) ((len) + OVERHEAD)
+
+// Custom message type for combined ticker and price
+#define MSG_TYPE_TICKER_AND_PRICE 0x03
+
+// Define fixed size for ticker string within the combined payload
+#define TICKER_FIXED_LEN 8
+#define COMBINED_PAYLOAD_LEN (TICKER_FIXED_LEN + sizeof(float))
 
 libusb_context *ctx = nullptr;
 libusb_device_handle *handle = nullptr;
@@ -125,19 +132,60 @@ int main(int argc, char *argv[])
     if (interfaceClaimed)
     {
         char line_buf[MAX_PAYLOAD];
+        uint8_t combined_payload[COMBINED_PAYLOAD_LEN];
+
         while (fgets(line_buf, sizeof(line_buf), stdin) != NULL)
         {
             // Remove newline character if present
             line_buf[strcspn(line_buf, "\n")] = 0;
             fprintf(stderr, "Received from stdin: %s\n", line_buf);
 
-            if (usb_send_frame(0x02, (const uint8_t *)line_buf, strlen(line_buf)))
+            char *ticker_start = line_buf;
+            char *price_str_start = NULL;
+            float price_value = 0.0f; // Default price
+
+            // Find the delimiter ": "
+            char *delimiter_pos = strstr(line_buf, ": ");
+            if (delimiter_pos != NULL)
             {
-                fprintf(stderr, "Message sent successfully via Bulk transfer\n");
+                // Extract ticker
+                int ticker_len = delimiter_pos - ticker_start;
+                if (ticker_len > TICKER_FIXED_LEN) {
+                    ticker_len = TICKER_FIXED_LEN; // Truncate if too long
+                }
+                memcpy(combined_payload, ticker_start, ticker_len);
+                // Pad with nulls if ticker is shorter than TICKER_FIXED_LEN
+                memset(combined_payload + ticker_len, '\0', TICKER_FIXED_LEN - ticker_len);
+                
+                // Extract price string and convert to float
+                price_str_start = delimiter_pos + 2; // Move past ": "
+                if (price_str_start != NULL && *price_str_start != '\0')
+                {
+                    price_value = atof(price_str_start);
+                }
             }
             else
             {
-                fprintf(stderr, "Failed to send message\n");
+                // If no delimiter, treat the whole line as ticker and set price to 0
+                int ticker_len = strlen(ticker_start);
+                if (ticker_len > TICKER_FIXED_LEN) {
+                    ticker_len = TICKER_FIXED_LEN; // Truncate
+                }
+                memcpy(combined_payload, ticker_start, ticker_len);
+                memset(combined_payload + ticker_len, '\0', TICKER_FIXED_LEN - ticker_len);
+            }
+
+            // Copy the float value directly into the payload after the ticker
+            memcpy(combined_payload + TICKER_FIXED_LEN, &price_value, sizeof(float));
+
+            // Send the combined payload
+            if (usb_send_frame(MSG_TYPE_TICKER_AND_PRICE, combined_payload, COMBINED_PAYLOAD_LEN))
+            {
+                fprintf(stderr, "Combined ticker and price sent successfully.\n");
+            }
+            else
+            {
+                fprintf(stderr, "Failed to send combined ticker and price.\n");
             }
         }
 
