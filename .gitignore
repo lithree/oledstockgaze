@@ -45,6 +45,9 @@
 *.mkdir
 \obj
 
+# QT build directories
+QT/Handler_QT/build/
+
 
 # Kernel Module Compile Results
 *.mod*
