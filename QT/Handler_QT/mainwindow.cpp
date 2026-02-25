@@ -8,14 +8,17 @@
 #include <QJsonArray>
 #include <QDateTime>
 #include <QProcessEnvironment>
+#include <QListWidget>
 
 MainWindow::MainWindow(QWidget *parent)
     : QWidget(parent),
     networkManager(new QNetworkAccessManager(this)),
     webSocket(new QWebSocket()),
     sampleTimer(new QTimer(this)),
+    watchlistDelayTimer(new QTimer(this)),
     latestPrice(0.0f),
     isRunning(false),
+    currentDisplayMode(DISPLAY_MODE_STOCK_PLOT),
     usbCtx(nullptr),
     usbHandle(nullptr),
     interfaceClaimed(false)
@@ -37,6 +40,9 @@ MainWindow::MainWindow(QWidget *parent)
     connect(webSocket, QOverload<QAbstractSocket::SocketError>::of(&QWebSocket::errorOccurred), this, &MainWindow::onWsError);
     connect(webSocket, &QWebSocket::disconnected, this, &MainWindow::onWsClosed);
     connect(sampleTimer, &QTimer::timeout, this, &MainWindow::sendSample);
+    connect(watchlistDelayTimer, &QTimer::timeout, this, &MainWindow::sendWatchlistDelayed);
+    connect(webSocket, &QWebSocket::disconnected, this, &MainWindow::onWsClosed);
+    connect(sampleTimer, &QTimer::timeout, this, &MainWindow::sendSample);
 }
 
 MainWindow::~MainWindow()
@@ -47,7 +53,7 @@ MainWindow::~MainWindow()
 void MainWindow::setupUi()
 {
     setWindowTitle("Finnhub Bridge");
-    resize(500, 400);
+    resize(600, 700);
 
     QVBoxLayout *mainLayout = new QVBoxLayout(this);
 
@@ -81,6 +87,47 @@ void MainWindow::setupUi()
 
     connect(startBtn, &QPushButton::clicked, this, &MainWindow::startBridge);
     connect(stopBtn, &QPushButton::clicked, this, &MainWindow::stopBridge);
+
+    // Display Mode Group
+    QGroupBox *modeGroup = new QGroupBox("Display Mode");
+    QHBoxLayout *modeLayout = new QHBoxLayout();
+    
+    stockPlotBtn = new QPushButton("Stock Plot");
+    watchlistBtn = new QPushButton("Watchlist");
+    
+    modeLayout->addWidget(stockPlotBtn);
+    modeLayout->addWidget(watchlistBtn);
+    modeGroup->setLayout(modeLayout);
+    mainLayout->addWidget(modeGroup);
+    
+    connect(stockPlotBtn, &QPushButton::clicked, this, &MainWindow::switchToStockPlot);
+    connect(watchlistBtn, &QPushButton::clicked, this, &MainWindow::switchToWatchlist);
+
+    // Watchlist Group
+    QGroupBox *watchlistGroup = new QGroupBox("Watchlist Management");
+    QVBoxLayout *watchlistLayout = new QVBoxLayout();
+    
+    QHBoxLayout *watchlistInputLayout = new QHBoxLayout();
+    watchlistInputLayout->addWidget(new QLabel("Add Ticker:"));
+    watchlistTickerInput = new QLineEdit();
+    watchlistInputLayout->addWidget(watchlistTickerInput);
+    
+    addWatchlistBtn = new QPushButton("Add");
+    removeWatchlistBtn = new QPushButton("Remove Selected");
+    watchlistInputLayout->addWidget(addWatchlistBtn);
+    watchlistInputLayout->addWidget(removeWatchlistBtn);
+    
+    watchlistLayout->addLayout(watchlistInputLayout);
+    
+    watchlistDisplay = new QListWidget();
+    watchlistDisplay->setMaximumHeight(150);
+    watchlistLayout->addWidget(watchlistDisplay);
+    
+    watchlistGroup->setLayout(watchlistLayout);
+    mainLayout->addWidget(watchlistGroup);
+    
+    connect(addWatchlistBtn, &QPushButton::clicked, this, &MainWindow::addToWatchlist);
+    connect(removeWatchlistBtn, &QPushButton::clicked, this, &MainWindow::removeFromWatchlist);
 
     // Log Area
     QGroupBox *logGroup = new QGroupBox("Console Output");
@@ -185,6 +232,38 @@ bool MainWindow::sendUsbFrame(const QString &ticker, float price)
     return (res == 0);
 }
 
+bool MainWindow::sendModeSwitch(uint8_t mode)
+{
+    if (!interfaceClaimed || !usbHandle) return false;
+
+    uint8_t frame[MAX_FRAME] = {0};
+    uint8_t *ptr = frame;
+    uint8_t checksum = 0;
+    uint8_t mode_payload = mode;
+    int payload_len = 1;
+
+    *ptr++ = FRAME_SOF;
+    *ptr++ = FRAME_SOF;
+    *ptr++ = MSG_TYPE_MODE_SWITCH;
+    *ptr++ = (uint8_t)(payload_len & 0xFF);
+    *ptr++ = (uint8_t)((payload_len >> 8) & 0xFF);
+
+    memcpy(ptr, &mode_payload, payload_len);
+    ptr += payload_len;
+
+    for (int i = 0; i < (ptr - frame); i++) {
+        checksum ^= frame[i];
+    }
+    *ptr = checksum;
+
+    int transferred = 0;
+    int len = payload_len + OVERHEAD;
+
+    int res = libusb_bulk_transfer(usbHandle, EP_OUT, frame, len, &transferred, TIMEOUT_MS);
+
+    return (res == 0);
+}
+
 void MainWindow::startBridge()
 {
     currentTicker = tickerInput->text().trimmed().toUpper();
@@ -198,6 +277,9 @@ void MainWindow::startBridge()
     tickerInput->setEnabled(false);
     intervalInput->setEnabled(false);
     stopBtn->setEnabled(true);
+    watchlistTickerInput->setEnabled(false);
+    addWatchlistBtn->setEnabled(false);
+    removeWatchlistBtn->setEnabled(false);
 
     isRunning = true;
     latestPrice = 0.0f;
@@ -214,6 +296,12 @@ void MainWindow::startBridge()
 
 void MainWindow::onRestReply(QNetworkReply *reply)
 {
+    // Check if this is a watchlist opening price request
+    if (reply->property("requestType").toString() == "watchlistOpeningPrice") {
+        onWatchlistOpeningPriceReply(reply);
+        return;
+    }
+
     if (!isRunning) {
         reply->deleteLater();
         return;
@@ -242,6 +330,29 @@ void MainWindow::onRestReply(QNetworkReply *reply)
     webSocket->open(QUrl(wsUrl));
 }
 
+void MainWindow::onWatchlistOpeningPriceReply(QNetworkReply *reply)
+{
+    QString ticker = reply->property("ticker").toString();
+
+    if (reply->error() == QNetworkReply::NoError) {
+        QByteArray response = reply->readAll();
+        QJsonDocument jsonDoc = QJsonDocument::fromJson(response);
+        QJsonObject jsonObj = jsonDoc.object();
+
+        float openPrice = jsonObj["o"].toDouble();
+        if (openPrice > 0.0f) {
+            watchlistOpeningPrices[ticker] = openPrice;
+            logMessage(QString("Fetched opening price for %1: $%2").arg(ticker).arg(openPrice, 0, 'f', 2));
+        } else {
+            logMessage(QString("Could not parse opening price for %1.").arg(ticker));
+        }
+    } else {
+        logMessage(QString("Failed to fetch opening price for %1: %2").arg(ticker, reply->errorString()));
+    }
+
+    reply->deleteLater();
+}
+
 void MainWindow::onWsConnected()
 {
     logMessage(QString("WebSocket connected. Subscribing to %1...").arg(currentTicker));
@@ -252,6 +363,9 @@ void MainWindow::onWsConnected()
 
     QJsonDocument doc(subscribeMsg);
     webSocket->sendTextMessage(QString::fromUtf8(doc.toJson(QJsonDocument::Compact)));
+
+    // Subscribe to all watchlist tickers
+    subscribeToWatchlist();
 
     // Start the sampling timer based on UI input
     int intervalMs = static_cast<int>(intervalInput->value() * 1000);
@@ -267,7 +381,24 @@ void MainWindow::onWsMessageReceived(const QString &message)
         QJsonArray dataArray = obj["data"].toArray();
         if (!dataArray.isEmpty()) {
             QJsonObject tradeObj = dataArray[0].toObject();
-            latestPrice = tradeObj["p"].toDouble();
+            QString symbol = tradeObj["s"].toString().trimmed().toUpper();
+            float price = tradeObj["p"].toDouble();
+
+            // Update main ticker if it matches
+            if (symbol == currentTicker) {
+                latestPrice = price;
+            }
+
+            // Update watchlist price if ticker is in watchlist
+            if (watchlist.contains(symbol)) {
+                watchlistPrices[symbol] = price;
+                updateWatchlistDisplay();
+                
+                // If in watchlist mode and USB is connected, send price update to device
+                if (currentDisplayMode == DISPLAY_MODE_WATCHLIST && interfaceClaimed && usbHandle) {
+                    sendUsbFrame(symbol, price);
+                }
+            }
         }
     }
 }
@@ -303,6 +434,59 @@ void MainWindow::sendSample()
     }
 }
 
+void MainWindow::switchToStockPlot()
+{
+    if (!interfaceClaimed || !usbHandle) {
+        logMessage("USB not connected. Please start the bridge first.");
+        return;
+    }
+
+    // Stop the watchlist delay timer when switching to stock plot
+    watchlistDelayTimer->stop();
+
+    bool success = sendModeSwitch(DISPLAY_MODE_STOCK_PLOT);
+    if (success) {
+        currentDisplayMode = DISPLAY_MODE_STOCK_PLOT;
+        // Resume sampling for main ticker in stock plot mode
+        if (isRunning) {
+            int intervalMs = static_cast<int>(intervalInput->value() * 1000);
+            sampleTimer->start(intervalMs);
+        }
+        logMessage("Switched to Stock Plot mode");
+    } else {
+        logMessage("Failed to switch to Stock Plot mode");
+    }
+}
+
+void MainWindow::switchToWatchlist()
+{
+    if (!interfaceClaimed || !usbHandle) {
+        logMessage("USB not connected. Please start the bridge first.");
+        return;
+    }
+
+    // Stop the sampling timer when switching to watchlist mode
+    sampleTimer->stop();
+
+    bool success = sendModeSwitch(DISPLAY_MODE_WATCHLIST);
+    if (success) {
+        currentDisplayMode = DISPLAY_MODE_WATCHLIST;
+        logMessage("Switched to Watchlist mode");
+        // Send watchlist items after a small delay to allow device to finish mode switch
+        // Stop any existing timer first to ensure clean state
+        watchlistDelayTimer->stop();
+        watchlistDelayTimer->setSingleShot(true);
+        watchlistDelayTimer->start(300);  // 300ms delay for reliable mode switching
+    } else {
+        logMessage("Failed to switch to Watchlist mode");
+        // Resume sampling if mode switch failed
+        if (isRunning) {
+            int intervalMs = static_cast<int>(intervalInput->value() * 1000);
+            sampleTimer->start(intervalMs);
+        }
+    }
+}
+
 void MainWindow::stopBridge()
 {
     if (!isRunning) return;
@@ -317,4 +501,126 @@ void MainWindow::stopBridge()
     tickerInput->setEnabled(true);
     intervalInput->setEnabled(true);
     stopBtn->setEnabled(false);
+    watchlistTickerInput->setEnabled(true);
+    addWatchlistBtn->setEnabled(true);
+    removeWatchlistBtn->setEnabled(true);
+}
+
+void MainWindow::addToWatchlist()
+{
+    QString ticker = watchlistTickerInput->text().trimmed().toUpper();
+    if (ticker.isEmpty()) {
+        logMessage("Please enter a ticker symbol.");
+        return;
+    }
+
+    if (watchlist.contains(ticker)) {
+        logMessage(QString("%1 is already in the watchlist.").arg(ticker));
+        return;
+    }
+
+    watchlist.append(ticker);
+    watchlistPrices[ticker] = 0.0f;
+    watchlistOpeningPrices[ticker] = 0.0f;
+    watchlistTickerInput->clear();
+    updateWatchlistDisplay();
+    logMessage(QString("Added %1 to watchlist. Fetching opening price...").arg(ticker));
+
+    // Fetch opening price from REST API
+    QString urlStr = QString("https://finnhub.io/api/v1/quote?symbol=%1&token=%2").arg(ticker, apiKey);
+    QUrl url(urlStr);
+    QNetworkRequest request(url);
+    QNetworkReply *reply = networkManager->get(request);
+    
+    // Tag the reply to identify it as a watchlist opening price request
+    reply->setProperty("requestType", "watchlistOpeningPrice");
+    reply->setProperty("ticker", ticker);
+
+    // If WebSocket is connected, subscribe to the new ticker
+    if (webSocket->isValid()) {
+        QJsonObject subscribeMsg;
+        subscribeMsg["type"] = "subscribe";
+        subscribeMsg["symbol"] = ticker;
+
+        QJsonDocument doc(subscribeMsg);
+        webSocket->sendTextMessage(QString::fromUtf8(doc.toJson(QJsonDocument::Compact)));
+    }
+}
+
+void MainWindow::removeFromWatchlist()
+{
+    QListWidgetItem *item = watchlistDisplay->currentItem();
+    if (!item) {
+        logMessage("Please select a ticker to remove.");
+        return;
+    }
+
+    QString ticker = item->text().split(" - ")[0].trimmed();
+    watchlist.removeAll(ticker);
+    watchlistPrices.remove(ticker);
+    updateWatchlistDisplay();
+    logMessage(QString("Removed %1 from watchlist.").arg(ticker));
+}
+
+void MainWindow::updateWatchlistDisplay()
+{
+    watchlistDisplay->clear();
+    for (const QString &ticker : watchlist) {
+        float price = watchlistPrices[ticker];
+        QString displayText;
+        if (price > 0.0f) {
+            displayText = QString("%1 - $%2").arg(ticker).arg(price, 0, 'f', 2);
+        } else {
+            displayText = QString("%1 - N/A").arg(ticker);
+        }
+        watchlistDisplay->addItem(displayText);
+    }
+}
+
+void MainWindow::subscribeToWatchlist()
+{
+    for (const QString &ticker : watchlist) {
+        QJsonObject subscribeMsg;
+        subscribeMsg["type"] = "subscribe";
+        subscribeMsg["symbol"] = ticker;
+
+        QJsonDocument doc(subscribeMsg);
+        webSocket->sendTextMessage(QString::fromUtf8(doc.toJson(QJsonDocument::Compact)));
+    }
+}
+
+void MainWindow::sendWatchlistToDevice()
+{
+    if (!interfaceClaimed || !usbHandle) return;
+
+    // First, send opening prices to establish the baseline on the device
+    for (const QString &ticker : watchlist) {
+        float openingPrice = watchlistOpeningPrices[ticker];
+        if (openingPrice > 0.0f) {
+            bool success = sendUsbFrame(ticker, openingPrice);
+            logMessage(QString("Sent opening price for %1: $%2 (Success: %3)")
+                           .arg(ticker)
+                           .arg(openingPrice, 0, 'f', 2)
+                           .arg(success ? "Yes" : "No"));
+        }
+    }
+    
+    // Then send current prices, which will show correct percentage changes
+    for (const QString &ticker : watchlist) {
+        float price = watchlistPrices[ticker];
+        if (price > 0.0f) {
+            bool success = sendUsbFrame(ticker, price);
+            logMessage(QString("Sent current price for %1: $%2 (Success: %3)")
+                           .arg(ticker)
+                           .arg(price, 0, 'f', 2)
+                           .arg(success ? "Yes" : "No"));
+        }
+    }
+}
+
+void MainWindow::sendWatchlistDelayed()
+{
+    // Stop the delay timer and send watchlist items
+    watchlistDelayTimer->stop();
+    sendWatchlistToDevice();
 }

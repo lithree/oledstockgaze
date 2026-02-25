@@ -10,24 +10,65 @@ uint8_t ret = 0;
 uint8_t  Dat_Up_Buf[1024];
 uint8_t  Bulk_Out_Buf[1024];
 volatile uint16_t Bulk_Out_Len = 0;
+uint8_t current_display_mode = DISPLAY_MODE_STOCK_PLOT;  // Default to stock plot mode
+static uint8_t mode_switch_in_progress = 0;  // Flag to ignore data while mode switching
+
+// Watchlist tracking
+static uint8_t watchlist_row = 1;  // Track current row for watchlist display
+static char watchlist_tickers[7][TICKER_FIXED_LEN + 1];  // Store tickers in display
+static float watchlist_opening_prices[7];  // Store opening prices for each ticker
+static uint8_t watchlist_count = 0;  // Number of tickers currently displayed
 
 void USB_command_check()
 {
-    if (LED_flag)
+
+    // Check for mode switch commands via EP3
+    if (USBHS_EP3_Rx_Len > 0)
     {
-        printf("Command Received: %d\r\n", LED_status);
+        uint8_t message_type = USBHS_EP3_Rx_Buf[2];
 
-        if (LED_status)
+        if (message_type == MSG_TYPE_MODE_SWITCH && USBHS_EP3_Rx_Len >= (HEADER_SIZE + 1))
         {
-            GPIO_WriteBit(GPIOA, GPIO_Pin_15, Bit_SET);
+            uint8_t mode = USBHS_EP3_Rx_Buf[HEADER_SIZE];
+            
+            if (mode == DISPLAY_MODE_STOCK_PLOT || mode == DISPLAY_MODE_WATCHLIST)
+            {
+                // Set flag to prevent data processing during mode switch
+                mode_switch_in_progress = 1;
+                
+                // Completely clear the screen
+                OLED_Clear();
+                OLED_Refresh();
+                
+                // Update mode
+                current_display_mode = mode;
+                
+                if (mode == DISPLAY_MODE_STOCK_PLOT)
+                {
+                    printf("Switched to Mode 1: Stock Plot Display\r\n");
+                }
+                else if (mode == DISPLAY_MODE_WATCHLIST)
+                {
+                    printf("Switched to Mode 2: Watchlist Display\r\n");
+                    // Reset watchlist display state
+                    watchlist_count = 0;
+                    watchlist_row = 1;
+                    memset(watchlist_tickers, 0, sizeof(watchlist_tickers));
+                    memset(watchlist_opening_prices, 0, sizeof(watchlist_opening_prices));
+                    OLED_ShowString(0, 0, "Watchlist:");
+                    OLED_Refresh();
+                }
+                
+                // Mode switch complete, ready to process data
+                mode_switch_in_progress = 0;
+            }
+            
+            USBHS_EP3_Rx_Len = 0;
+            USBHSD->UEP3_RX_CTRL = (USBHSD->UEP3_RX_CTRL & ~USBHS_UEP_R_RES_MASK) | USBHS_UEP_R_RES_ACK;
+            return;
         }
-        else
-        {
-            GPIO_WriteBit(GPIOA, GPIO_Pin_15, Bit_RESET);
-        }
-
-        LED_flag = 0;
     }
+
     /* Determine if enumeration is complete, perform data transfer if completed */
     if (USBHS_DevEnumStatus)
     {
@@ -62,6 +103,16 @@ void USB_command_check()
 
 void USB_bulk_data_handler(void)
 {
+    // Ignore all data processing during mode switch
+    if (mode_switch_in_progress) {
+        // Re-arm endpoint if there's data but don't process it
+        if (USBHS_EP3_Rx_Len > 0) {
+            USBHS_EP3_Rx_Len = 0;
+            USBHSD->UEP3_RX_CTRL = (USBHSD->UEP3_RX_CTRL & ~USBHS_UEP_R_RES_MASK) | USBHS_UEP_R_RES_ACK;
+        }
+        return;
+    }
+
     if (USBHS_EP3_Rx_Len > 0)
     {
         uint8_t message_type = USBHS_EP3_Rx_Buf[2];
@@ -88,37 +139,104 @@ void USB_bulk_data_handler(void)
                 if (price_decimal < 0) price_decimal = -price_decimal;
                 sprintf(price_display_buf, "$%d.%02d", price_int, price_decimal);
 
-                // Calculate percentage change from opening price
-                static float opening_price = 0;
-                float percent_change = 0;
-                char percent_buf[20] = {0};
-                
-                if (opening_price < 0.0001f) {
-                    opening_price = received_price;  // First price is the opening
+                // Mode 1: Stock Plot Display
+                if (current_display_mode == DISPLAY_MODE_STOCK_PLOT)
+                {
+                    // Calculate percentage change from opening price
+                    static float opening_price = 0;
+                    float percent_change = 0;
+                    char percent_buf[20] = {0};
+                    
+                    if (opening_price < 0.0001f) {
+                        opening_price = received_price;  // First price is the opening
+                    }
+                    
+                    percent_change = ((received_price - opening_price) / opening_price) * 100.0f;
+                    
+                    int percent_int = (int)percent_change;
+                    int percent_decimal = (int)((percent_change - percent_int) * 100);
+                    if (percent_decimal < 0) percent_decimal = -percent_decimal;
+                    char sign = (percent_change >= 0) ? '+' : '-';
+                    sprintf(percent_buf, "%c%d.%02d%%", sign, percent_int < 0 ? -percent_int : percent_int, percent_decimal);
+
+                    // Clear previous text by showing a line of spaces
+                    OLED_ShowString(0, 0, "          ");
+                    OLED_ShowString(0, 1, "          ");
+
+                    // Update text display
+                    OLED_ShowString(0, 0, ticker_display_buf);
+                    OLED_ShowString(36, 0, price_display_buf);
+                    OLED_ShowChar(78, 0, sign);
+                    OLED_ShowString(80, 0, percent_buf);
+
+                    // Update the chart with the new price
+                    OLED_Chart_AddPoint(received_price);
+
+                    printf("Updated Ticker: %s, Price: %s, Change from Open: %s\r\n", ticker_display_buf, price_display_buf, percent_buf);
                 }
-                
-                percent_change = ((received_price - opening_price) / opening_price) * 100.0f;
-                
-                int percent_int = (int)percent_change;
-                int percent_decimal = (int)((percent_change - percent_int) * 100);
-                if (percent_decimal < 0) percent_decimal = -percent_decimal;
-                char sign = (percent_change >= 0) ? '+' : '-';
-                sprintf(percent_buf, "%c%d.%02d%%", sign, percent_int < 0 ? -percent_int : percent_int, percent_decimal);
-
-                // Clear previous text by showing a line of spaces
-                OLED_ShowString(0, 0, "          ");
-                OLED_ShowString(0, 1, "          ");
-
-                // Update text display
-                OLED_ShowString(0, 0, ticker_display_buf);
-                OLED_ShowString(36, 0, price_display_buf);
-                OLED_ShowChar(78, 0, sign);
-                OLED_ShowString(80, 0, percent_buf);
-
-                // Update the chart with the new price
-                OLED_Chart_AddPoint(received_price);
-
-                printf("Updated Ticker: %s, Price: %s, Change from Open: %s\r\n", ticker_display_buf, price_display_buf, percent_buf);
+                // Mode 2: Watchlist Display
+                else if (current_display_mode == DISPLAY_MODE_WATCHLIST)
+                {
+                    // Check if this ticker is already displayed
+                    int existing_row = -1;
+                    int ticker_index = -1;
+                    for (int i = 0; i < watchlist_count; i++) {
+                        if (strcmp(watchlist_tickers[i], ticker_display_buf) == 0) {
+                            existing_row = i + 1;  // Rows start at 1
+                            ticker_index = i;
+                            break;
+                        }
+                    }
+                    
+                    // If it's a new ticker, add it
+                    if (existing_row == -1 && watchlist_count < 6) {
+                        ticker_index = watchlist_count;
+                        watchlist_count++;
+                        watchlist_row = watchlist_count;
+                        strncpy(watchlist_tickers[ticker_index], ticker_display_buf, TICKER_FIXED_LEN);
+                        watchlist_opening_prices[ticker_index] = received_price;  // First price is opening price
+                        existing_row = watchlist_row;
+                    }
+                    
+                    // Wrap around after 6 items
+                    if (watchlist_count >= 6 && existing_row == -1) {
+                        OLED_Clear();
+                        watchlist_count = 0;
+                        watchlist_row = 1;
+                        memset(watchlist_tickers, 0, sizeof(watchlist_tickers));
+                        memset(watchlist_opening_prices, 0, sizeof(watchlist_opening_prices));
+                        OLED_ShowString(0, 0, "Watchlist:");
+                        OLED_Refresh();
+                    }
+                    
+                    // Display or update the item with percentage change
+                    if (existing_row > 0 && ticker_index >= 0) {
+                        // Calculate percentage change
+                        float opening_price = watchlist_opening_prices[ticker_index];
+                        float percent_change = 0;
+                        char percent_buf[10] = {0};
+                        
+                        if (opening_price > 0.0001f) {
+                            percent_change = ((received_price - opening_price) / opening_price) * 100.0f;
+                        }
+                        
+                        int percent_int = (int)percent_change;
+                        int percent_decimal = (int)((percent_change - percent_int) * 100);
+                        if (percent_decimal < 0) percent_decimal = -percent_decimal;
+                        char sign = (percent_change >= 0) ? '+' : '-';
+                        
+                        // Format: "TICK $XX.XX +X.XX%"
+                        char watchlist_line[30];
+                        sprintf(watchlist_line, "%s %s %c%d.%02d%%", 
+                                ticker_display_buf, price_display_buf, sign,
+                                percent_int < 0 ? -percent_int : percent_int, percent_decimal);
+                        
+                        OLED_ShowString(0, existing_row, watchlist_line);
+                        OLED_Refresh();
+                    }
+                    
+                    printf("Watchlist Updated: %s %s (Row: %d)\r\n", ticker_display_buf, price_display_buf, existing_row);
+                }
             }
         }
         

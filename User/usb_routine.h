@@ -3,8 +3,14 @@
 
 #include <stdint.h>
 
-// Custom message type for combined ticker and price (must match Handler.c)
+// Custom message types for combined ticker and price (must match Handler.c)
 #define MSG_TYPE_TICKER_AND_PRICE 0x03
+#define MSG_TYPE_MODE_SWITCH 0x04
+#define MSG_TYPE_WATCHLIST 0x05
+
+// Display Mode Definitions
+#define DISPLAY_MODE_STOCK_PLOT 1
+#define DISPLAY_MODE_WATCHLIST 2
 
 // Define fixed size for ticker string within the combined payload (must match Handler.c)
 #define TICKER_FIXED_LEN 8
@@ -20,6 +26,7 @@
 extern uint8_t ret;
 extern uint8_t LED_flag;
 extern uint8_t LED_status;
+extern uint8_t current_display_mode;  // Current display mode (1=Stock Plot, 2=Watchlist)
 
 extern uint8_t  Dat_Up_Buf[1024];
 extern uint8_t  Bulk_Out_Buf[1024];
