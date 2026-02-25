@@ -50,5 +50,8 @@ void OLED_DisplayOff(void);     // 关闭显示
 // x: 0~127, y: 0~7 (行/Page)
 void OLED_ShowChar(uint8_t x, uint8_t y, char chr);
 void OLED_ShowString(uint8_t x, uint8_t y, char *str);
+void OLED_Refresh(void);
+void OLED_DrawPoint(uint8_t x, uint8_t y, uint8_t t);
+void OLED_Chart_AddPoint(float value);
 
 #endif

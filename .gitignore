@@ -41,8 +41,10 @@
 *.su
 *.idb
 *.pdb
-.mk
-.mkdir
+*.mk
+*.mkdir
+\obj
+
 
 # Kernel Module Compile Results
 *.mod*

@@ -109,8 +109,17 @@ const uint8_t F6x8[][6] = {
 static uint8_t OLED_GRAM[8][128];
 
 // Circular Buffer (Ring Buffer) Logic
-static uint8_t ChartData[128] = {0}; 
-static uint8_t ChartHead = 0; // Points to the *next* write position
+static uint8_t ChartData[128] = {0};      // Normalized display values
+static float ChartRawData[128] = {0};     // Raw price values
+static uint8_t ChartHead = 0;             // Points to the *next* write position
+static uint8_t ChartCount = 0;            // Number of valid samples in buffer (<=128)
+static float ChartMaxVal = 0;             // Track max value
+static float ChartMinVal = 100000;        // Track min value
+static const float ChartInitSpanPercent = 0.01f; // +/-1% initial vertical span around opening
+static float ChartOpeningPrice = 0.0f;    // Opening price (not plotted)
+static uint8_t ChartHasOpening = 0;       // Whether opening price has been set
+static float ChartFirstDataValue = 0.0f;  // First actual data point (plotted)
+static uint8_t ChartHasFirstData = 0;     // Whether first plotted data has been set
 
 /* ==========================================================
  * 3. HARDWARE DRIVER (SPI2 & GPIO)
@@ -118,9 +127,11 @@ static uint8_t ChartHead = 0; // Points to the *next* write position
 
 static void OLED_SendByte(uint8_t dat)
 {
-    while (SPI_I2S_GetFlagStatus(SPI2, SPI_I2S_FLAG_TXE) == RESET);
+    while (SPI_I2S_GetFlagStatus(SPI2, SPI_I2S_FLAG_TXE) == RESET)
+        ;
     SPI_I2S_SendData(SPI2, dat);
-    while (SPI_I2S_GetFlagStatus(SPI2, SPI_I2S_FLAG_BSY) == SET);
+    while (SPI_I2S_GetFlagStatus(SPI2, SPI_I2S_FLAG_BSY) == SET)
+        ;
 }
 
 static void OLED_WriteCmd(uint8_t cmd)
@@ -203,11 +214,12 @@ void OLED_DisplayOff(void)
 void OLED_DrawPoint(uint8_t x, uint8_t y, uint8_t t)
 {
     uint8_t pos, bx, temp = 0;
-    if (x > 127 || y > 63) return;
+    if (x > 127 || y > 63)
+        return;
 
     // Y=0 maps to pos=7 (bottom page), Y=63 maps to pos=0 (top page)
-    pos = 7 - y / 8; 
-    bx = y % 8;      
+    pos = 7 - y / 8;
+    bx = y % 8;
     temp = 1 << (7 - bx);
 
     if (t)
@@ -216,50 +228,104 @@ void OLED_DrawPoint(uint8_t x, uint8_t y, uint8_t t)
         OLED_GRAM[pos][x] &= ~temp;
 }
 
-void OLED_Chart_AddPoint(uint8_t value)
+void OLED_Chart_AddPoint(float value)
 {
-    uint8_t i, j;
-    uint8_t read_idx;
+    uint8_t i = 0, j = 0;
+    uint8_t read_idx = 0;
+    uint8_t norm_val = 0;
 
-    // 1. Clamp value to fit strictly within the bottom 48 pixels 
-    //    (Leaves the top 16 pixels / Pages 0 and 1 empty for text)
-    if (value > 47) value = 47;
-
-    // 2. Insert into Ring Buffer directly
-    ChartData[ChartHead] = value;
-    
-    // 3. Move Head pointer
-    ChartHead++;
-    if (ChartHead >= 128) {
-        ChartHead = 0;
+    // If opening not set yet, treat this value as opening price (do not plot)
+    if (!ChartHasOpening)
+    {
+        ChartOpeningPrice = value;
+        ChartHasOpening = 1;
+        return; // don't store or plot opening
     }
 
-    // 4. Targeted Clear 
-    //    Clear ONLY Pages 2 through 7 (Chart area). 
-    //    Pages 0 and 1 remain completely untouched, keeping 2 rows of text visible.
-    for (i = 2; i < 8; i++) {
-        for (j = 0; j < 128; j++) {
+    // If this is the first actual plotted data, initialize span around it
+    if (!ChartHasFirstData)
+    {
+        ChartFirstDataValue = value;
+        ChartHasFirstData = 1;
+        float span = value * ChartInitSpanPercent;
+        ChartMaxVal = value + span;
+        ChartMinVal = value - span;
+        // proceed to store this first plotted data below
+    }
+
+    // 1. Store raw price value at head
+    ChartRawData[ChartHead] = value;
+
+    // 2. Advance head and count
+    ChartHead++;
+    if (ChartHead >= 128)
+        ChartHead = 0;
+    if (ChartCount < 128)
+        ChartCount++;
+
+    // 3. Compute min/max across the current window (oldest -> newest)
+    read_idx = (ChartHead + 128 - ChartCount) % 128; // oldest
+    float window_min = 1e30f;
+    float window_max = -1e30f;
+    uint8_t scan_idx = read_idx;
+    for (i = 0; i < ChartCount; i++)
+    {
+        float v = ChartRawData[scan_idx];
+        if (v < window_min) window_min = v;
+        if (v > window_max) window_max = v;
+        scan_idx++;
+        if (scan_idx >= 128) scan_idx = 0;
+    }
+
+    // store for external visibility
+    ChartMinVal = window_min;
+    ChartMaxVal = window_max;
+
+    // 4. Renormalize ALL values in the window so smallest -> 0, largest -> 47
+    scan_idx = read_idx;
+    for (i = 0; i < ChartCount; i++)
+    {
+        if (window_max > window_min)
+        {
+            float f = (ChartRawData[scan_idx] - window_min) / (window_max - window_min);
+            if (f < 0.0f) f = 0.0f;
+            if (f > 1.0f) f = 1.0f;
+            norm_val = (uint8_t)(f * 47.0f + 0.5f);
+        }
+        else
+        {
+            norm_val = 24; // center when no span
+        }
+        ChartData[scan_idx] = (norm_val > 47) ? 47 : norm_val;
+        scan_idx++;
+        if (scan_idx >= 128) scan_idx = 0;
+    }
+
+    // 5. Targeted Clear (Pages 2-7 only, keep text in Pages 0-1)
+    for (i = 2; i < 8; i++)
+    {
+        for (j = 0; j < 128; j++)
+        {
             OLED_GRAM[i][j] = 0x00;
         }
     }
 
-    // 5. Render with Fill Logic
-    read_idx = ChartHead; // Start from oldest point
-
-    for (i = 0; i < 128; i++) {
-        // Draw vertical solid line from the bottom (j=0) up to the data point
-        for (j = 0; j <= ChartData[read_idx]; j++) {
-            OLED_DrawPoint(i, j, 1);
+    // 6. Render chart. If fewer than full width samples, right-align (new data appears at the right)
+    uint8_t x_start = (ChartCount < 128) ? (128 - ChartCount) : 0;
+    read_idx = (ChartHead + 128 - ChartCount) % 128; // oldest
+    for (i = 0; i < ChartCount; i++)
+    {
+        uint8_t x = x_start + i;
+        for (j = 0; j <= ChartData[read_idx]; j++)
+        {
+            OLED_DrawPoint(x, j, 1);
         }
-        
-        // Advance buffer read index
         read_idx++;
-        if (read_idx >= 128) {
+        if (read_idx >= 128)
             read_idx = 0;
-        }
     }
-    
-    // 6. Update Screen
+
+    // 7. Update Screen
     OLED_Refresh();
 }
 
@@ -273,18 +339,22 @@ void OLED_ShowChar(uint8_t x, uint8_t y, char chr)
     uint8_t width = 6;
 
     // Quick Rejection
-    if (x >= 128 || y > 7) return;
+    if (x >= 128 || y > 7)
+        return;
 
     // Clipping
-    if (x + 6 > 128) {
+    if (x + 6 > 128)
+    {
         width = 128 - x;
     }
 
-    if (chr < 32 || chr > 127) chr = ' ';
+    if (chr < 32 || chr > 127)
+        chr = ' ';
     const uint8_t *pSrc = F6x8[(uint8_t)chr - 32];
     uint8_t *pDst = &OLED_GRAM[y][x];
 
-    for (i = 0; i < width; i++) {
+    for (i = 0; i < width; i++)
+    {
         *pDst++ = *pSrc++;
     }
 }
@@ -311,9 +381,9 @@ void OLED_ShowString(uint8_t x, uint8_t y, char *str)
 void OLED_Init(void)
 {
     GPIO_InitTypeDef GPIO_InitStructure = {0};
-    SPI_InitTypeDef  SPI_InitStructure  = {0};
+    SPI_InitTypeDef SPI_InitStructure = {0};
 
-    RCC_APB1PeriphClockCmd(OLED_RCC_SPI, ENABLE); 
+    RCC_APB1PeriphClockCmd(OLED_RCC_SPI, ENABLE);
     RCC_APB2PeriphClockCmd(OLED_RCC_GPIO, ENABLE);
 
     // SPI Pins
@@ -333,13 +403,13 @@ void OLED_Init(void)
     OLED_RST_SET;
 
     // SPI Config
-    SPI_InitStructure.SPI_Direction = SPI_Direction_1Line_Tx; 
+    SPI_InitStructure.SPI_Direction = SPI_Direction_1Line_Tx;
     SPI_InitStructure.SPI_Mode = SPI_Mode_Master;
     SPI_InitStructure.SPI_DataSize = SPI_DataSize_8b;
-    SPI_InitStructure.SPI_CPOL = SPI_CPOL_Low;      
-    SPI_InitStructure.SPI_CPHA = SPI_CPHA_1Edge;    
+    SPI_InitStructure.SPI_CPOL = SPI_CPOL_Low;
+    SPI_InitStructure.SPI_CPHA = SPI_CPHA_1Edge;
     SPI_InitStructure.SPI_NSS = SPI_NSS_Soft;
-    SPI_InitStructure.SPI_BaudRatePrescaler = SPI_BaudRatePrescaler_4; 
+    SPI_InitStructure.SPI_BaudRatePrescaler = SPI_BaudRatePrescaler_4;
     SPI_InitStructure.SPI_FirstBit = SPI_FirstBit_MSB;
     SPI_InitStructure.SPI_CRCPolynomial = 7;
     SPI_Init(SPI2, &SPI_InitStructure);
@@ -353,31 +423,31 @@ void OLED_Init(void)
     Delay_Ms(50);
 
     // Init Commands
-    OLED_WriteCmd(0xAE); 
-    OLED_WriteCmd(0x00); 
-    OLED_WriteCmd(0x10); 
-    OLED_WriteCmd(0x40); 
-    OLED_WriteCmd(0x81); 
-    OLED_WriteCmd(0xCF); 
-    OLED_WriteCmd(0xA1); 
-    OLED_WriteCmd(0xC8); 
-    OLED_WriteCmd(0xA6); 
-    OLED_WriteCmd(0xA8); 
-    OLED_WriteCmd(0x3F);
-    OLED_WriteCmd(0xD3); 
+    OLED_WriteCmd(0xAE);
     OLED_WriteCmd(0x00);
-    OLED_WriteCmd(0xD5); 
-    OLED_WriteCmd(0xF0);
-    OLED_WriteCmd(0xD9); 
-    OLED_WriteCmd(0xF1);
-    OLED_WriteCmd(0xDA); 
-    OLED_WriteCmd(0x12);
-    OLED_WriteCmd(0xDB); 
+    OLED_WriteCmd(0x10);
     OLED_WriteCmd(0x40);
-    OLED_WriteCmd(0x8D); 
-    OLED_WriteCmd(0x14); 
-    OLED_WriteCmd(0xAF); 
-    
+    OLED_WriteCmd(0x81);
+    OLED_WriteCmd(0xCF);
+    OLED_WriteCmd(0xA1);
+    OLED_WriteCmd(0xC8);
+    OLED_WriteCmd(0xA6);
+    OLED_WriteCmd(0xA8);
+    OLED_WriteCmd(0x3F);
+    OLED_WriteCmd(0xD3);
+    OLED_WriteCmd(0x00);
+    OLED_WriteCmd(0xD5);
+    OLED_WriteCmd(0xF0);
+    OLED_WriteCmd(0xD9);
+    OLED_WriteCmd(0xF1);
+    OLED_WriteCmd(0xDA);
+    OLED_WriteCmd(0x12);
+    OLED_WriteCmd(0xDB);
+    OLED_WriteCmd(0x40);
+    OLED_WriteCmd(0x8D);
+    OLED_WriteCmd(0x14);
+    OLED_WriteCmd(0xAF);
+
     OLED_Clear();
     OLED_Refresh();
 }

@@ -82,23 +82,43 @@ void USB_bulk_data_handler(void)
                 // Extract float price
                 memcpy(&received_price, USBHS_EP3_Rx_Buf + HEADER_SIZE + TICKER_FIXED_LEN, sizeof(float));
 
-                // Format price for display
-                sprintf(price_display_buf, "$%.2f", received_price);
+                // Convert float to string manually (printf doesn't support %f on this system)
+                int price_int = (int)received_price;
+                int price_decimal = (int)((received_price - price_int) * 100);
+                if (price_decimal < 0) price_decimal = -price_decimal;
+                sprintf(price_display_buf, "$%d.%02d", price_int, price_decimal);
+
+                // Calculate percentage change from opening price
+                static float opening_price = 0;
+                float percent_change = 0;
+                char percent_buf[20] = {0};
+                
+                if (opening_price < 0.0001f) {
+                    opening_price = received_price;  // First price is the opening
+                }
+                
+                percent_change = ((received_price - opening_price) / opening_price) * 100.0f;
+                
+                int percent_int = (int)percent_change;
+                int percent_decimal = (int)((percent_change - percent_int) * 100);
+                if (percent_decimal < 0) percent_decimal = -percent_decimal;
+                char sign = (percent_change >= 0) ? '+' : '-';
+                sprintf(percent_buf, "%c%d.%02d%%", sign, percent_int < 0 ? -percent_int : percent_int, percent_decimal);
 
                 // Clear previous text by showing a line of spaces
-                OLED_ShowString(48, 0, "          "); 
-                OLED_ShowString(48, 1, "          ");
+                OLED_ShowString(0, 0, "          ");
+                OLED_ShowString(0, 1, "          ");
 
                 // Update text display
-                OLED_ShowString(0, 0, "Ticker: ");
-                OLED_ShowString(48, 0, ticker_display_buf);
-                OLED_ShowString(0, 1, "Price : ");
-                OLED_ShowString(48, 1, price_display_buf);
+                OLED_ShowString(0, 0, ticker_display_buf);
+                OLED_ShowString(36, 0, price_display_buf);
+                OLED_ShowChar(78, 0, sign);
+                OLED_ShowString(80, 0, percent_buf);
 
                 // Update the chart with the new price
-                OLED_Chart_AddPoint((uint8_t)received_price);
+                OLED_Chart_AddPoint(received_price);
 
-                printf("Updated Ticker: %s, Price: %s\r\n", ticker_display_buf, price_display_buf);
+                printf("Updated Ticker: %s, Price: %s, Change from Open: %s\r\n", ticker_display_buf, price_display_buf, percent_buf);
             }
         }
         
