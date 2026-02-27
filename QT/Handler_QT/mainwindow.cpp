@@ -236,32 +236,24 @@ bool MainWindow::sendModeSwitch(uint8_t mode)
 {
     if (!interfaceClaimed || !usbHandle) return false;
 
-    uint8_t frame[MAX_FRAME] = {0};
-    uint8_t *ptr = frame;
-    uint8_t checksum = 0;
-    uint8_t mode_payload = mode;
-    int payload_len = 1;
+    /* Use Control Transfer (EP0) with vendor-specific request instead of bulk transfer */
+    int res = libusb_control_transfer(
+        usbHandle,
+        USB_REQUEST_TYPE_VENDOR_OUT,    // bmRequestType: vendor-specific, host-to-device
+        USB_VENDOR_REQUEST_MODE_SWITCH, // bRequest: 0x02 for mode switch
+        (uint16_t)mode,                 // wValue: display mode
+        0,                              // wIndex: not used
+        nullptr,                        // data buffer: not used
+        0,                              // wLength: 0 (no data phase)
+        TIMEOUT_MS
+    );
 
-    *ptr++ = FRAME_SOF;
-    *ptr++ = FRAME_SOF;
-    *ptr++ = MSG_TYPE_MODE_SWITCH;
-    *ptr++ = (uint8_t)(payload_len & 0xFF);
-    *ptr++ = (uint8_t)((payload_len >> 8) & 0xFF);
-
-    memcpy(ptr, &mode_payload, payload_len);
-    ptr += payload_len;
-
-    for (int i = 0; i < (ptr - frame); i++) {
-        checksum ^= frame[i];
+    if (res < 0) {
+        logMessage(QString("Mode switch failed: %1").arg(libusb_error_name(res)));
+        return false;
     }
-    *ptr = checksum;
 
-    int transferred = 0;
-    int len = payload_len + OVERHEAD;
-
-    int res = libusb_bulk_transfer(usbHandle, EP_OUT, frame, len, &transferred, TIMEOUT_MS);
-
-    return (res == 0);
+    return true;
 }
 
 void MainWindow::startBridge()

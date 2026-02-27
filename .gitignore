@@ -45,9 +45,9 @@
 *.mkdir
 \obj
 
-# QT build directories
+# QT
 QT/Handler_QT/build/
-
+QT/Handler_QT/CMakeLists.txt.user
 
 # Kernel Module Compile Results
 *.mod*
@@ -60,3 +60,4 @@ dkms.conf
 
 # debug information files
 *.dwo
+

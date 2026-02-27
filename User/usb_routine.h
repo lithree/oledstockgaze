@@ -32,10 +32,9 @@ extern uint8_t  Dat_Up_Buf[1024];
 extern uint8_t  Bulk_Out_Buf[1024];
 extern volatile uint16_t Bulk_Out_Len;
 
-// External declarations for USB buffers, using correct names from ch32v30x_usbhs_device.h
-extern __attribute__ ((aligned(4))) uint8_t USBHS_EP3_Rx_Buf[ ];
-extern __attribute__ ((aligned(4))) uint8_t USBHS_EP4_Tx_Buf[ ];
-extern volatile uint16_t USBHS_EP3_Rx_Len;
+/* Mode switch control transfer variables (replaces old EP3 command mechanism) */
+extern volatile uint8_t USBHS_Mode_Switch_Flag;
+extern volatile uint8_t USBHS_Mode_Switch_Value;
 
 
 /******************************************************************************/

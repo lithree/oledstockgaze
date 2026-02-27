@@ -53,6 +53,10 @@ __attribute__((aligned(4))) uint8_t USBHS_EP6_Tx_Buf[DEF_USB_EP6_HS_SIZE];
 
 volatile uint16_t USBHS_EP3_Rx_Len = 0;
 
+/* Mode switch flag from control transfer */
+volatile uint8_t USBHS_Mode_Switch_Flag = 0;
+volatile uint8_t USBHS_Mode_Switch_Value = 0;
+
 /* Endpoint tx busy flag */
 volatile uint8_t USBHS_Endp_Busy[DEF_UEP_NUM];
 
@@ -424,8 +428,13 @@ void USBHS_IRQHandler(void)
                 {
                     if ((USBHS_SetupReqType & USB_REQ_TYP_MASK) == USB_REQ_TYP_VENDOR)
                     {
-                        /* This is the original location of the vendor request handler. It is restored now. */
-                         if (USBHS_SetupReqCode == 0x01)
+                        /* Handle vendor request data stage */
+                        if (USBHS_SetupReqCode == 0x02)
+                        {
+                            /* Mode Switch Command - data received in EP0_Buf */
+                            /* No additional action needed; mode is in the request Value field */
+                        }
+                        else if (USBHS_SetupReqCode == 0x01)
                          {
                              LED_status = USBHS_EP0_Buf[0];
                              LED_flag = 1;
@@ -522,6 +531,14 @@ void USBHS_IRQHandler(void)
                 LED_status = (USBHS_SetupReqValue > 0) ? 1 : 0;
                 LED_flag = 1;
                 len = 0; // Prepare for the zero-length status stage
+            }
+            else if (USBHS_SetupReqCode == 0x02)
+            {
+                /* Mode Switch Command - Use Control Transfer on EP0 */
+                /* Request Value contains the display mode */
+                USBHS_Mode_Switch_Value = (uint8_t)(USBHS_SetupReqValue & 0xFF);
+                USBHS_Mode_Switch_Flag = 1;
+                len = 0;
             }
             else
             {

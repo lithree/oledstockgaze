@@ -135,6 +135,10 @@ extern __attribute__ ((aligned(4))) uint8_t USBHS_EP5_Rx_Buf[ ];
 extern __attribute__ ((aligned(4))) uint8_t USBHS_EP4_Tx_Buf[ ];
 extern __attribute__ ((aligned(4))) uint8_t USBHS_EP6_Tx_Buf[ ];
 
+/* Mode switch flag from control transfer */
+extern volatile uint8_t USBHS_Mode_Switch_Flag;
+extern volatile uint8_t USBHS_Mode_Switch_Value;
+
 /********************************************************************************/
 /* Function Declaration */
 extern void USBHS_RCC_Init( void );

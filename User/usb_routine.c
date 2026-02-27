@@ -21,52 +21,45 @@ static uint8_t watchlist_count = 0;  // Number of tickers currently displayed
 
 void USB_command_check()
 {
-
-    // Check for mode switch commands via EP3
-    if (USBHS_EP3_Rx_Len > 0)
+    /* Mode Switch Command via Control Transfer (EP0) */
+    if (USBHS_Mode_Switch_Flag)
     {
-        uint8_t message_type = USBHS_EP3_Rx_Buf[2];
-
-        if (message_type == MSG_TYPE_MODE_SWITCH && USBHS_EP3_Rx_Len >= (HEADER_SIZE + 1))
+        uint8_t mode = USBHS_Mode_Switch_Value;
+        
+        if (mode == DISPLAY_MODE_STOCK_PLOT || mode == DISPLAY_MODE_WATCHLIST)
         {
-            uint8_t mode = USBHS_EP3_Rx_Buf[HEADER_SIZE];
+            /* Set flag to prevent data processing during mode switch */
+            mode_switch_in_progress = 1;
             
-            if (mode == DISPLAY_MODE_STOCK_PLOT || mode == DISPLAY_MODE_WATCHLIST)
+            /* Completely clear the screen */
+            OLED_Clear();
+            OLED_Refresh();
+            
+            /* Update mode */
+            current_display_mode = mode;
+            
+            if (mode == DISPLAY_MODE_STOCK_PLOT)
             {
-                // Set flag to prevent data processing during mode switch
-                mode_switch_in_progress = 1;
-                
-                // Completely clear the screen
-                OLED_Clear();
+                printf("Switched to Mode 1: Stock Plot Display\r\n");
+            }
+            else if (mode == DISPLAY_MODE_WATCHLIST)
+            {
+                printf("Switched to Mode 2: Watchlist Display\r\n");
+                /* Reset watchlist display state */
+                watchlist_count = 0;
+                watchlist_row = 1;
+                memset(watchlist_tickers, 0, sizeof(watchlist_tickers));
+                memset(watchlist_opening_prices, 0, sizeof(watchlist_opening_prices));
                 OLED_Refresh();
-                
-                // Update mode
-                current_display_mode = mode;
-                
-                if (mode == DISPLAY_MODE_STOCK_PLOT)
-                {
-                    printf("Switched to Mode 1: Stock Plot Display\r\n");
-                }
-                else if (mode == DISPLAY_MODE_WATCHLIST)
-                {
-                    printf("Switched to Mode 2: Watchlist Display\r\n");
-                    // Reset watchlist display state
-                    watchlist_count = 0;
-                    watchlist_row = 1;
-                    memset(watchlist_tickers, 0, sizeof(watchlist_tickers));
-                    memset(watchlist_opening_prices, 0, sizeof(watchlist_opening_prices));
-                    OLED_ShowString(0, 0, "Watchlist:");
-                    OLED_Refresh();
-                }
-                
-                // Mode switch complete, ready to process data
-                mode_switch_in_progress = 0;
             }
             
-            USBHS_EP3_Rx_Len = 0;
-            USBHSD->UEP3_RX_CTRL = (USBHSD->UEP3_RX_CTRL & ~USBHS_UEP_R_RES_MASK) | USBHS_UEP_R_RES_ACK;
-            return;
+            /* Mode switch complete, ready to process data */
+            mode_switch_in_progress = 0;
         }
+        
+        /* Clear the mode switch flag after processing */
+        USBHS_Mode_Switch_Flag = 0;
+        return;
     }
 
     /* Determine if enumeration is complete, perform data transfer if completed */
@@ -133,7 +126,7 @@ void USB_bulk_data_handler(void)
                 // Extract float price
                 memcpy(&received_price, USBHS_EP3_Rx_Buf + HEADER_SIZE + TICKER_FIXED_LEN, sizeof(float));
 
-                // Convert float to string manually (printf doesn't support %f on this system)
+                // Convert float to string manually
                 int price_int = (int)received_price;
                 int price_decimal = (int)((received_price - price_int) * 100);
                 if (price_decimal < 0) price_decimal = -price_decimal;

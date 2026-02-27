@@ -29,6 +29,10 @@
 #define OVERHEAD 6 // SOF(2) + Type(1) + Len(2) + Checksum(1)
 #define MAX_FRAME 1030
 
+/* USB Control Transfer Constants for Mode Switch */
+#define USB_VENDOR_REQUEST_MODE_SWITCH 0x02
+#define USB_REQUEST_TYPE_VENDOR_OUT 0x40
+
 class MainWindow : public QWidget
 {
     Q_OBJECT
