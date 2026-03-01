@@ -21,17 +21,15 @@ static uint8_t watchlist_count = 0;  // Number of tickers currently displayed
 
 void USB_command_check()
 {
-    /* Mode Switch Command via Control Transfer (EP0) */
+    /* Control Transfer (EP0) */
     if (USBHS_Mode_Switch_Flag)
     {
         uint8_t mode = USBHS_Mode_Switch_Value;
         
         if (mode == DISPLAY_MODE_STOCK_PLOT || mode == DISPLAY_MODE_WATCHLIST)
         {
-            /* Set flag to prevent data processing during mode switch */
             mode_switch_in_progress = 1;
             
-            /* Completely clear the screen */
             OLED_Clear();
             OLED_Refresh();
             
@@ -53,7 +51,6 @@ void USB_command_check()
                 OLED_Refresh();
             }
             
-            /* Mode switch complete, ready to process data */
             mode_switch_in_progress = 0;
         }
         
@@ -98,7 +95,7 @@ void USB_bulk_data_handler(void)
 {
     // Ignore all data processing during mode switch
     if (mode_switch_in_progress) {
-        // Re-arm endpoint if there's data but don't process it
+        // Re-arm endpoint if there's data
         if (USBHS_EP3_Rx_Len > 0) {
             USBHS_EP3_Rx_Len = 0;
             USBHSD->UEP3_RX_CTRL = (USBHSD->UEP3_RX_CTRL & ~USBHS_UEP_R_RES_MASK) | USBHS_UEP_R_RES_ACK;
@@ -114,7 +111,9 @@ void USB_bulk_data_handler(void)
         {
             char ticker_display_buf[TICKER_FIXED_LEN + 1];
             char price_display_buf[20];
+            char time_display_buf[20];
             float received_price;
+            uint32_t received_timestamp;
 
             if (USBHS_EP3_Rx_Len >= (HEADER_SIZE + COMBINED_PAYLOAD_LEN))
             {
@@ -126,11 +125,21 @@ void USB_bulk_data_handler(void)
                 // Extract float price
                 memcpy(&received_price, USBHS_EP3_Rx_Buf + HEADER_SIZE + TICKER_FIXED_LEN, sizeof(float));
 
-                // Convert float to string manually
+                // Extract timestamp
+                memcpy(&received_timestamp, USBHS_EP3_Rx_Buf + HEADER_SIZE + TICKER_FIXED_LEN + sizeof(float), sizeof(uint32_t));
+
+                // Convert float to string
                 int price_int = (int)received_price;
                 int price_decimal = (int)((received_price - price_int) * 100);
                 if (price_decimal < 0) price_decimal = -price_decimal;
                 sprintf(price_display_buf, "$%d.%02d", price_int, price_decimal);
+
+                // Convert timestamp to HH:MM:SS format
+                uint32_t total_seconds = received_timestamp;
+                uint32_t hours = (total_seconds / 3600) % 24;  // Hours in 24-hour format (UTC)
+                uint32_t minutes = (total_seconds / 60) % 60;
+                uint32_t seconds = total_seconds % 60;
+                sprintf(time_display_buf, "%02d:%02d:%02d", (int)hours, (int)minutes, (int)seconds);
 
                 // Mode 1: Stock Plot Display
                 if (current_display_mode == DISPLAY_MODE_STOCK_PLOT)
@@ -152,20 +161,23 @@ void USB_bulk_data_handler(void)
                     char sign = (percent_change >= 0) ? '+' : '-';
                     sprintf(percent_buf, "%c%d.%02d%%", sign, percent_int < 0 ? -percent_int : percent_int, percent_decimal);
 
-                    // Clear previous text by showing a line of spaces
+                    // Clear previous text
                     OLED_ShowString(0, 0, "          ");
                     OLED_ShowString(0, 1, "          ");
 
                     // Update text display
                     OLED_ShowString(0, 0, ticker_display_buf);
-                    OLED_ShowString(36, 0, price_display_buf);
+                    OLED_ShowString(30, 0, price_display_buf);
                     OLED_ShowChar(78, 0, sign);
                     OLED_ShowString(80, 0, percent_buf);
+
+                    // Display timestamp on line 1
+                    OLED_ShowString(0, 1, time_display_buf);
 
                     // Update the chart with the new price
                     OLED_Chart_AddPoint(received_price);
 
-                    printf("Updated Ticker: %s, Price: %s, Change from Open: %s\r\n", ticker_display_buf, price_display_buf, percent_buf);
+                    printf("Updated Ticker: %s, Price: %s, Change from Open: %s, Time: %s\r\n", ticker_display_buf, price_display_buf, percent_buf, time_display_buf);
                 }
                 // Mode 2: Watchlist Display
                 else if (current_display_mode == DISPLAY_MODE_WATCHLIST)
@@ -174,14 +186,14 @@ void USB_bulk_data_handler(void)
                     int existing_row = -1;
                     int ticker_index = -1;
                     for (int i = 0; i < watchlist_count; i++) {
-                        if (strcmp(watchlist_tickers[i], ticker_display_buf) == 0) {
+                        if (strncmp(watchlist_tickers[i], ticker_display_buf, TICKER_FIXED_LEN) == 0) {
                             existing_row = i + 1;  // Rows start at 1
                             ticker_index = i;
                             break;
                         }
                     }
                     
-                    // If it's a new ticker, add it
+                    // Add new ticker if not present
                     if (existing_row == -1 && watchlist_count < 6) {
                         ticker_index = watchlist_count;
                         watchlist_count++;
@@ -191,7 +203,7 @@ void USB_bulk_data_handler(void)
                         existing_row = watchlist_row;
                     }
                     
-                    // Wrap around after 6 items
+                    // Max display 6 tickers
                     if (watchlist_count >= 6 && existing_row == -1) {
                         OLED_Clear();
                         watchlist_count = 0;

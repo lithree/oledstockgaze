@@ -9,6 +9,7 @@
 #include <QDateTime>
 #include <QProcessEnvironment>
 #include <QListWidget>
+#include <QSettings>
 
 MainWindow::MainWindow(QWidget *parent)
     : QWidget(parent),
@@ -17,15 +18,17 @@ MainWindow::MainWindow(QWidget *parent)
     sampleTimer(new QTimer(this)),
     watchlistDelayTimer(new QTimer(this)),
     latestPrice(0.0f),
+    latestTimestamp(0),
     isRunning(false),
     currentDisplayMode(DISPLAY_MODE_STOCK_PLOT),
     usbCtx(nullptr),
     usbHandle(nullptr),
-    interfaceClaimed(false)
+    interfaceClaimed(false),
+    settings(new QSettings("OLED_StockGaze", "Finnhub_Bridge", this))
 {
     setupUi();
 
-    // Retrieve API key from environment variables
+    // Retrieve API key from environment variables 
     QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
     apiKey = env.value("FINNHUB_API_KEY");
 
@@ -33,6 +36,9 @@ MainWindow::MainWindow(QWidget *parent)
         logMessage("ERROR: FINNHUB_API_KEY environment variable is not set.");
         startBtn->setEnabled(false);
     }
+
+    // Load watchlist from configuration file
+    loadWatchlist();
 
     connect(networkManager, &QNetworkAccessManager::finished, this, &MainWindow::onRestReply);
     connect(webSocket, &QWebSocket::connected, this, &MainWindow::onWsConnected);
@@ -195,7 +201,7 @@ void MainWindow::closeUsb()
     logMessage("USB resources released.");
 }
 
-bool MainWindow::sendUsbFrame(const QString &ticker, float price)
+bool MainWindow::sendUsbFrame(const QString &ticker, float price, uint32_t timestamp)
 {
     if (!interfaceClaimed || !usbHandle) return false;
 
@@ -205,6 +211,7 @@ bool MainWindow::sendUsbFrame(const QString &ticker, float price)
     int tickerLen = qMin(tickerBytes.length(), (int)TICKER_FIXED_LEN);
     memcpy(combined_payload, tickerBytes.constData(), tickerLen);
     memcpy(combined_payload + TICKER_FIXED_LEN, &price, sizeof(float));
+    memcpy(combined_payload + TICKER_FIXED_LEN + sizeof(float), &timestamp, sizeof(uint32_t));
 
     uint8_t frame[MAX_FRAME] = {0};
     uint8_t *ptr = frame;
@@ -307,7 +314,10 @@ void MainWindow::onRestReply(QNetworkReply *reply)
         float openPrice = jsonObj["o"].toDouble();
         if (openPrice > 0.0f) {
             logMessage(QString("Fetched opening price: $%1").arg(openPrice));
-            sendUsbFrame(currentTicker, openPrice);
+            // Use current time as timestamp for opening price
+            uint32_t currentTimestamp = static_cast<uint32_t>(QDateTime::currentSecsSinceEpoch());
+            latestTimestamp = currentTimestamp;
+            sendUsbFrame(currentTicker, openPrice, currentTimestamp);
         } else {
             logMessage("Could not parse opening price.");
         }
@@ -375,20 +385,24 @@ void MainWindow::onWsMessageReceived(const QString &message)
             QJsonObject tradeObj = dataArray[0].toObject();
             QString symbol = tradeObj["s"].toString().trimmed().toUpper();
             float price = tradeObj["p"].toDouble();
+            // Finnhub timestamp is in milliseconds, convert to seconds
+            uint32_t timestamp = (uint32_t)(tradeObj["t"].toDouble() / 1000.0);
 
             // Update main ticker if it matches
             if (symbol == currentTicker) {
                 latestPrice = price;
+                latestTimestamp = timestamp;
             }
 
             // Update watchlist price if ticker is in watchlist
             if (watchlist.contains(symbol)) {
                 watchlistPrices[symbol] = price;
+                watchlistTimestamps[symbol] = timestamp;
                 updateWatchlistDisplay();
                 
                 // If in watchlist mode and USB is connected, send price update to device
                 if (currentDisplayMode == DISPLAY_MODE_WATCHLIST && interfaceClaimed && usbHandle) {
-                    sendUsbFrame(symbol, price);
+                    sendUsbFrame(symbol, price, timestamp);
                 }
             }
         }
@@ -418,7 +432,7 @@ void MainWindow::onWsClosed()
 void MainWindow::sendSample()
 {
     if (latestPrice > 0.0f && isRunning) {
-        bool success = sendUsbFrame(currentTicker, latestPrice);
+        bool success = sendUsbFrame(currentTicker, latestPrice, latestTimestamp);
         logMessage(QString("Sampling -> %1: %2 (Success: %3)")
                        .arg(currentTicker)
                        .arg(latestPrice, 0, 'f', 2)
@@ -489,6 +503,9 @@ void MainWindow::stopBridge()
     webSocket->close();
     closeUsb();
 
+    // Save watchlist before shutdown
+    saveWatchlist();
+
     startBtn->setEnabled(true);
     tickerInput->setEnabled(true);
     intervalInput->setEnabled(true);
@@ -514,8 +531,10 @@ void MainWindow::addToWatchlist()
     watchlist.append(ticker);
     watchlistPrices[ticker] = 0.0f;
     watchlistOpeningPrices[ticker] = 0.0f;
+    watchlistTimestamps[ticker] = 0;
     watchlistTickerInput->clear();
     updateWatchlistDisplay();
+    saveWatchlist();
     logMessage(QString("Added %1 to watchlist. Fetching opening price...").arg(ticker));
 
     // Fetch opening price from REST API
@@ -550,7 +569,9 @@ void MainWindow::removeFromWatchlist()
     QString ticker = item->text().split(" - ")[0].trimmed();
     watchlist.removeAll(ticker);
     watchlistPrices.remove(ticker);
+    watchlistTimestamps.remove(ticker);
     updateWatchlistDisplay();
+    saveWatchlist();
     logMessage(QString("Removed %1 from watchlist.").arg(ticker));
 }
 
@@ -589,7 +610,8 @@ void MainWindow::sendWatchlistToDevice()
     for (const QString &ticker : watchlist) {
         float openingPrice = watchlistOpeningPrices[ticker];
         if (openingPrice > 0.0f) {
-            bool success = sendUsbFrame(ticker, openingPrice);
+            uint32_t currentTimestamp = static_cast<uint32_t>(QDateTime::currentSecsSinceEpoch());
+            bool success = sendUsbFrame(ticker, openingPrice, currentTimestamp);
             logMessage(QString("Sent opening price for %1: $%2 (Success: %3)")
                            .arg(ticker)
                            .arg(openingPrice, 0, 'f', 2)
@@ -601,7 +623,8 @@ void MainWindow::sendWatchlistToDevice()
     for (const QString &ticker : watchlist) {
         float price = watchlistPrices[ticker];
         if (price > 0.0f) {
-            bool success = sendUsbFrame(ticker, price);
+            uint32_t timestamp = watchlistTimestamps.contains(ticker) ? watchlistTimestamps[ticker] : static_cast<uint32_t>(QDateTime::currentSecsSinceEpoch());
+            bool success = sendUsbFrame(ticker, price, timestamp);
             logMessage(QString("Sent current price for %1: $%2 (Success: %3)")
                            .arg(ticker)
                            .arg(price, 0, 'f', 2)
@@ -615,4 +638,63 @@ void MainWindow::sendWatchlistDelayed()
     // Stop the delay timer and send watchlist items
     watchlistDelayTimer->stop();
     sendWatchlistToDevice();
+}
+void MainWindow::saveWatchlist()
+{
+    if (!settings) return;
+
+    settings->beginGroup("Watchlist");
+    {
+        // Clear previous watchlist
+        settings->remove("");
+
+        settings->setValue("count", watchlist.count());
+        for (int i = 0; i < watchlist.count(); ++i) {
+            settings->setValue(QString("ticker_%1").arg(i), watchlist[i]);
+        }
+    }
+    settings->endGroup();
+    
+    settings->sync();
+    logMessage("Watchlist saved successfully.");
+}
+
+void MainWindow::loadWatchlist()
+{
+    if (!settings) return;
+
+    settings->beginGroup("Watchlist");
+    {
+        int count = settings->value("count", 0).toInt();
+        for (int i = 0; i < count; ++i) {
+            QString ticker = settings->value(QString("ticker_%1").arg(i), "").toString();
+            if (!ticker.isEmpty()) {
+                watchlist.append(ticker);
+                watchlistPrices[ticker] = 0.0f;
+                watchlistOpeningPrices[ticker] = 0.0f;
+                watchlistTimestamps[ticker] = 0;
+            }
+        }
+    }
+    settings->endGroup();
+
+    if (watchlist.count() > 0) {
+        updateWatchlistDisplay();
+        logMessage(QString("Loaded %1 ticker(s) from watchlist.").arg(watchlist.count()));
+        
+        // Fetch opening prices from API for all loaded tickers
+        if (!apiKey.isEmpty()) {
+            logMessage("Fetching opening prices from API...");
+            for (const QString &ticker : watchlist) {
+                QString urlStr = QString("https://finnhub.io/api/v1/quote?symbol=%1&token=%2").arg(ticker, apiKey);
+                QUrl url(urlStr);
+                QNetworkRequest request(url);
+                QNetworkReply *reply = networkManager->get(request);
+                
+                // Tag the reply to identify it as a watchlist opening price request
+                reply->setProperty("requestType", "watchlistOpeningPrice");
+                reply->setProperty("ticker", ticker);
+            }
+        }
+    }
 }

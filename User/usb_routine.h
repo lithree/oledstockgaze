@@ -14,7 +14,8 @@
 
 // Define fixed size for ticker string within the combined payload (must match Handler.c)
 #define TICKER_FIXED_LEN 8
-#define COMBINED_PAYLOAD_LEN (TICKER_FIXED_LEN + sizeof(float))
+#define TIMESTAMP_LEN 4  // uint32_t for seconds since epoch
+#define COMBINED_PAYLOAD_LEN (TICKER_FIXED_LEN + sizeof(float) + TIMESTAMP_LEN)
 
 // Protocol Constants (copied from Handler.c for consistency)
 #define FRAME_SOF 0x0A

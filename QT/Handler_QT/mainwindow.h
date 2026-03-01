@@ -12,6 +12,7 @@
 #include <QTimer>
 #include <QListWidget>
 #include <QMap>
+#include <QSettings>
 #include "libusb.h"
 
 /* USB Protocol Constants */
@@ -25,7 +26,8 @@
 #define DISPLAY_MODE_STOCK_PLOT 1
 #define DISPLAY_MODE_WATCHLIST 2
 #define TICKER_FIXED_LEN 8
-#define COMBINED_PAYLOAD_LEN (TICKER_FIXED_LEN + sizeof(float))
+#define TIMESTAMP_LEN 4  // uint32_t for seconds since epoch
+#define COMBINED_PAYLOAD_LEN (TICKER_FIXED_LEN + sizeof(float) + TIMESTAMP_LEN)
 #define OVERHEAD 6 // SOF(2) + Type(1) + Len(2) + Checksum(1)
 #define MAX_FRAME 1030
 
@@ -61,12 +63,14 @@ private:
     void logMessage(const QString &msg);
     bool initUsb();
     void closeUsb();
-    bool sendUsbFrame(const QString &ticker, float price);
+    bool sendUsbFrame(const QString &ticker, float price, uint32_t timestamp);
     bool sendModeSwitch(uint8_t mode);
     void subscribeToWatchlist();
     void updateWatchlistDisplay();
     void sendWatchlistToDevice();
     void sendWatchlistDelayed();
+    void saveWatchlist();
+    void loadWatchlist();
 
     // UI Elements
     QLineEdit *tickerInput;
@@ -91,16 +95,21 @@ private:
     QString apiKey;
     QString currentTicker;
     float latestPrice;
+    uint32_t latestTimestamp;  // Store latest trade timestamp
     bool isRunning;
     uint8_t currentDisplayMode;  // Track current display mode
     QStringList watchlist;
     QMap<QString, float> watchlistPrices;
     QMap<QString, float> watchlistOpeningPrices;  // Store actual opening prices from API
+    QMap<QString, uint32_t> watchlistTimestamps;  // Store latest timestamp for each ticker
 
     // USB State
     libusb_context *usbCtx;
     libusb_device_handle *usbHandle;
     bool interfaceClaimed;
+
+    // Settings
+    QSettings *settings;
 };
 
 #endif // MAINWINDOW_H
