@@ -7,9 +7,13 @@
 #include "stdlib.h"
 #include "usb_routine.h"
 
+void SysTick_Handler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
+
 /* Global Variable */
 uint8_t LED_status;
 uint8_t LED_flag;
+volatile uint32_t systick_counter = 0;
+volatile uint8_t pagechange_flag = 0;
 
 /*********************************************************************
  * @fn      main
@@ -29,6 +33,24 @@ void GPIO_Toggle_INIT(void)
     GPIO_Init(GPIOA, &GPIO_InitStructure);
 }
 
+/*********************************************************************
+ * @fn      SYSTICK_Init_Config
+ *
+ * @brief   SYSTICK_Init_Config.
+ *
+ * @return  none
+ */
+void SYSTICK_Init_Config(uint64_t ticks)
+{
+    SysTick->SR &= ~(1 << 0);//clear State flag
+    SysTick->CMP = ticks;
+    SysTick->CNT = 0;
+    SysTick->CTLR = 0xF;
+
+    NVIC_SetPriority(SysTicK_IRQn, 15);
+    NVIC_EnableIRQ(SysTicK_IRQn);
+}
+
 int main(void)
 {
     NVIC_PriorityGroupConfig(NVIC_PriorityGroup_2);
@@ -41,7 +63,7 @@ int main(void)
     USBHS_RCC_Init();
     USBHS_Device_Init(ENABLE);
     NVIC_EnableIRQ(USBHS_IRQn);
-
+    SYSTICK_Init_Config(SystemCoreClock-1);
     GPIO_Toggle_INIT();
 
     OLED_Init();
@@ -55,3 +77,22 @@ int main(void)
         USB_bulk_data_handler();
     }
 }
+
+/*********************************************************************
+ * @fn      SysTick_Handler
+ *
+ * @brief   SysTick_Handler.
+ *
+ * @return  none
+ */
+void SysTick_Handler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
+void SysTick_Handler(void)
+{
+    if(SysTick->SR == 1)
+    {
+        SysTick->SR = 0;//clear State flag
+        pagechange_flag = 1;
+        systick_counter++;
+    }
+}
+
